@@ -92,8 +92,9 @@ def render_result(result: VerificationResult) -> None:
 st.title("TTB Alcohol Label Verification")
 st.caption(
     "Compares submitted application data against what's printed on the label image. "
-    "Brand name, class/type, and net contents use tolerant matching; the government "
-    "warning statement requires an exact, verbatim match."
+    "Brand name, class/type, net contents, and name/address use tolerant matching; "
+    "country of origin matches by containment; the government warning statement "
+    "requires an exact, verbatim match."
 )
 
 tab_single, tab_batch = st.tabs(["Single Label", "Batch Upload"])
@@ -104,9 +105,16 @@ with tab_single:
     with col1:
         brand_name = st.text_input("Brand Name", placeholder="OLD TOM DISTILLERY")
         class_type = st.text_input("Class / Type", placeholder="Kentucky Straight Bourbon Whiskey")
+        name_and_address = st.text_input(
+            "Name & Address (bottler/producer)",
+            placeholder="Distilled and Bottled by Old Tom Distillery, Louisville, KY",
+        )
     with col2:
         alcohol_content = st.text_input("Alcohol Content", placeholder="45% Alc./Vol. (90 Proof)")
         net_contents = st.text_input("Net Contents", placeholder="750 mL")
+        country_of_origin = st.text_input(
+            "Country of Origin (imports only)", placeholder="Leave blank for domestic products"
+        )
 
     st.subheader("2. Label image")
     image_file = st.file_uploader(
@@ -119,6 +127,8 @@ with tab_single:
             class_type=class_type,
             alcohol_content=alcohol_content,
             net_contents=net_contents,
+            name_and_address=name_and_address,
+            country_of_origin=country_of_origin,
         )
         with st.spinner("Reading label..."):
             result = run_single(image_file.getvalue(), image_file.name, application)
@@ -127,7 +137,8 @@ with tab_single:
 with tab_batch:
     st.subheader("1. Applications CSV")
     st.caption(
-        "Columns: filename, brand_name, class_type, alcohol_content, net_contents. "
+        "Columns: filename, brand_name, class_type, alcohol_content, net_contents, "
+        "name_and_address, country_of_origin (leave blank for domestic products). "
         "`filename` must match an uploaded image's filename exactly."
     )
     csv_file = st.file_uploader("Upload applications CSV", type=["csv"], key="batch_csv")
@@ -142,7 +153,14 @@ with tab_batch:
 
     if st.button("Run Batch Verification", type="primary", disabled=not (csv_file and image_files)):
         apps_df = pd.read_csv(csv_file)
-        required_cols = {"filename", "brand_name", "class_type", "alcohol_content", "net_contents"}
+        required_cols = {
+            "filename",
+            "brand_name",
+            "class_type",
+            "alcohol_content",
+            "net_contents",
+            "name_and_address",
+        }  # country_of_origin is optional -- legitimately blank for domestic products
         missing = required_cols - set(apps_df.columns)
 
         if missing:
@@ -161,11 +179,19 @@ with tab_batch:
                     return VerificationResult(
                         filename=fname, overall="ERROR", error="No matching image uploaded for this filename."
                     )
+                # country_of_origin is an optional column; a blank cell reads
+                # back as NaN from pandas, not "", so it needs an explicit
+                # empty-string fallback rather than a plain str() cast.
+                country = row.get("country_of_origin", "")
+                country = "" if pd.isna(country) else str(country)
+
                 application = ApplicationData(
                     brand_name=str(row["brand_name"]),
                     class_type=str(row["class_type"]),
                     alcohol_content=str(row["alcohol_content"]),
                     net_contents=str(row["net_contents"]),
+                    name_and_address=str(row["name_and_address"]),
+                    country_of_origin=country,
                 )
                 return run_single(img_bytes, fname, application)
 

@@ -157,6 +157,15 @@ has a documented expected verdict) -- see that file for the full matrix.
   the `except` is what actually surfaced the traceback that led to the
   two gotchas above. If you add new try/except blocks to this app,
   log inside them, not just display-in-UI.
+- **File uploads against a `--url` remote target are flakier than against
+  localhost.** Hit this once: `set_input_files()` silently didn't attach
+  the file at all (screenshot showed the empty uploader, no chip, no error)
+  even though every text field committed correctly -- likely the extra
+  network latency of a real Cloud Run round-trip vs. instant localhost
+  changing the timing `driver.py` assumes. A plain retry succeeded. If
+  this recurs, the real fix is polling for the upload chip to appear
+  (not just the button's enabled state) with a longer timeout when `--url`
+  is set, rather than assuming local-dev timing holds remotely too.
 
 ## Troubleshooting
 

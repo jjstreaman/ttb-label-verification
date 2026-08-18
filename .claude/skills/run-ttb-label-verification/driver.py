@@ -173,6 +173,8 @@ def cmd_single(args):
             ("Class / Type", args.class_type),
             ("Alcohol Content", args.abv),
             ("Net Contents", args.net_contents),
+            ("Name & Address (bottler/producer)", args.name_address),
+            ("Country of Origin (imports only)", args.country),
         ]:
             field = page.get_by_label(label)
             field.fill(value)
@@ -226,6 +228,8 @@ def main():
     p_single.add_argument("class_type")
     p_single.add_argument("abv")
     p_single.add_argument("net_contents")
+    p_single.add_argument("--name-address", dest="name_address", default="", help="bottler/producer name & address (optional field, blank by default)")
+    p_single.add_argument("--country", default="", help="country of origin, imports only (optional field, blank by default)")
     p_single.add_argument("--url", help="target a remote deployment instead of localhost:8501 (skips the local `start` check)")
 
     args = parser.parse_args()

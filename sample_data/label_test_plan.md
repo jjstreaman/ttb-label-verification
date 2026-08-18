@@ -1,10 +1,12 @@
 # Sample label test plan
 
-Six labels: a clean baseline (matches the brief's own example exactly), two
-labels that specifically exercise the interview edge cases, one genuine
-mismatch, and two more beverage types for breadth. `applications_template.csv`
-already has the matching application-data rows -- filenames must line up
-with whatever the generated images are saved as.
+Six generated labels: a clean baseline (matches the brief's own example
+exactly), two labels that specifically exercise the interview edge cases,
+one genuine mismatch, and two more beverage types for breadth. Plus one
+real-world photo (#7) demonstrating the country-of-origin containment
+match. `applications_template.csv` has the matching application-data rows
+for the six generated labels -- filenames must line up with whatever the
+generated images are saved as.
 
 For each label below: **Application data** is what you type into the app
 (or what's already in the CSV). **On the label image** is the exact text
@@ -36,6 +38,8 @@ The brief's own example. Every field should match exactly.
 - Class/Type: `Kentucky Straight Bourbon Whiskey`
 - Alcohol Content: `45% Alc./Vol. (90 Proof)`
 - Net Contents: `750 mL`
+- Name & Address: `Distilled and Bottled by Old Tom Distillery, Louisville, KY`
+- Country of Origin: _(blank -- domestic)_
 
 **On the label image:** identical text, plus the full warning statement
 correctly formatted.
@@ -55,6 +59,8 @@ punctuation on the brand name only.
 - Class/Type: `London Dry Gin`
 - Alcohol Content: `40% Alc./Vol. (80 Proof)`
 - Net Contents: `750 mL`
+- Name & Address: `Distilled by Stone's Throw Distillery, Portland, OR`
+- Country of Origin: _(blank -- domestic)_
 
 **On the label image:**
 - Brand name printed as: `STONE'S THROW` (all caps, as a label would
@@ -79,10 +85,12 @@ that a human proofreader would also catch.
 - Class/Type: `Vodka`
 - Alcohol Content: `40% Alc./Vol. (80 Proof)`
 - Net Contents: `1 L`
+- Name & Address: `Produced and Bottled by Crescent Point Distillers, Austin, TX`
+- Country of Origin: _(blank -- domestic)_
 
 **On the label image:**
-- Brand name, class/type, alcohol content, net contents: identical to
-  application data
+- Brand name, class/type, alcohol content, net contents, name/address:
+  identical to application data
 - Warning statement text: same wording, but printed as **`Government
   Warning:`** in title case instead of `GOVERNMENT WARNING:` in all caps --
   this is Jenny's exact example ("I caught one last month where they used
@@ -104,9 +112,12 @@ and not smoothed over by fuzzy/tolerance matching.
 - Class/Type: `Straight Rye Whiskey`
 - Alcohol Content: `45% Alc./Vol. (90 Proof)`
 - Net Contents: `750 mL`
+- Name & Address: `Distilled by Smithford Distilling Co., Bardstown, KY`
+- Country of Origin: _(blank -- domestic)_
 
 **On the label image:**
-- Brand name, class/type, net contents: identical to application data
+- Brand name, class/type, net contents, name/address: identical to
+  application data
 - Alcohol Content printed as: `40% Alc./Vol. (80 Proof)` -- a real 5-point
   ABV discrepancy, well outside the ±0.3% tolerance
 - Full warning statement, correctly formatted
@@ -125,6 +136,8 @@ Breadth case: confirms the pipeline isn't spirits-specific.
 - Class/Type: `India Pale Ale`
 - Alcohol Content: `6.5% Alc./Vol.`
 - Net Contents: `12 FL OZ`
+- Name & Address: `Brewed and Bottled by Blue Harbor Brewing Co., Portland, ME`
+- Country of Origin: _(blank -- domestic)_
 
 **On the label image:** identical text, plus the full warning statement
 correctly formatted.
@@ -142,11 +155,26 @@ Second breadth case.
 - Class/Type: `Cabernet Sauvignon`
 - Alcohol Content: `13.5% Alc./Vol.`
 - Net Contents: `750 mL`
+- Name & Address: `Produced and Bottled by Willow Glen Vineyards, Napa, CA`
+- Country of Origin: _(blank -- domestic)_
 
 **On the label image:** identical text, plus the full warning statement
 correctly formatted.
 
 **Expected result:** PASS, all fields.
+
+---
+
+### 7. `label-3.jpg` -- real-world import, country-of-origin containment match
+
+Not part of the CSV batch (it's one of the real bottle photos from earlier
+testing, not a generated label) but worth noting here: this is an actual
+Italian Prosecco bottle that prints "Product of Italy" on the back label.
+Submitting `Italy` as the application's Country of Origin value correctly
+matches via containment (`matching.py`'s `_match_country_of_origin`), even
+though the label's printed text is "Product of Italy," not just "Italy."
+See the "Why direct API, not Vertex" / "Approach" sections of the main
+README for the containment-matching rationale.
 
 ---
 

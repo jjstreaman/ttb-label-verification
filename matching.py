@@ -79,6 +79,36 @@ def _match_abv(submitted: str, extracted: str) -> FieldResult:
     )
 
 
+def _match_country_of_origin(submitted: str, extracted: str) -> FieldResult:
+    norm_sub = _normalize_loose(submitted)
+    norm_ext = _normalize_loose(extracted)
+
+    if not norm_sub and not norm_ext:
+        return FieldResult(
+            field="country_of_origin",
+            submitted=submitted,
+            extracted=extracted,
+            match=True,
+            method="fuzzy",
+            detail="Not applicable on either side (expected for domestic products).",
+        )
+
+    # Containment, not a straight ratio: labels commonly print "Product of
+    # Italy" or "Made in Italy" while the application just says "Italy" --
+    # token_sort_ratio penalizes that length mismatch even though the
+    # country itself matches exactly.
+    if norm_sub and norm_sub in norm_ext:
+        return FieldResult(
+            field="country_of_origin",
+            submitted=submitted,
+            extracted=extracted,
+            match=True,
+            method="fuzzy",
+            detail="Submitted country found in label text.",
+        )
+    return _fuzzy_field("country_of_origin", submitted, extracted)
+
+
 def _match_warning(extracted_text: str, heading_caps_bold: bool) -> FieldResult:
     # Case-insensitive: many real labels print the entire statement in caps
     # as a style choice, which is compliant. The regulation's all-caps
@@ -117,6 +147,8 @@ def verify_fields(application: ApplicationData, extracted: ExtractedLabel) -> li
         _fuzzy_field("class_type", application.class_type, extracted.class_type),
         _match_abv(application.alcohol_content, extracted.alcohol_content),
         _fuzzy_field("net_contents", application.net_contents, extracted.net_contents),
+        _fuzzy_field("name_and_address", application.name_and_address, extracted.name_and_address),
+        _match_country_of_origin(application.country_of_origin, extracted.country_of_origin),
         _match_warning(extracted.warning_statement_text, extracted.warning_heading_is_caps_bold),
     ]
 

@@ -2,7 +2,8 @@
 
 A prototype that checks whether an alcohol beverage label image matches the
 data submitted on its application: brand name, class/type, alcohol content,
-net contents, and the mandatory government warning statement.
+net contents, name and address of the bottler/producer, country of origin
+(imports only), and the mandatory government warning statement.
 
 ## Screenshots
 
@@ -101,16 +102,26 @@ Drop `--allow-unauthenticated` if this shouldn't be publicly reachable.
   fields as printed, not to correct or interpret them — judgment about
   whether a transcription *matches* the application happens afterward, in
   plain Python, not inside the model call.
-- **Matching is deliberately split into two different rules**, because the
-  two things being checked have opposite tolerance requirements:
-  - Brand name, class/type, and net contents use **fuzzy matching**
-    (`rapidfuzz`, case/punctuation-insensitive, similarity threshold 88/100).
-    This is the "STONE'S THROW" vs "Stone's Throw" case — technically not
+- **Matching is deliberately split into several rules**, because the
+  fields being checked have different tolerance requirements. Covers
+  every field the brief's "Additional Context" section names, not just
+  the five in its worked example:
+  - Brand name, class/type, net contents, and name/address of the
+    bottler/producer use **fuzzy matching** (`rapidfuzz`,
+    case/punctuation-insensitive, similarity threshold 88/100). This is
+    the "STONE'S THROW" vs "Stone's Throw" case — technically not
     identical strings, but the same brand, and a compliance agent's own
     judgment would pass it.
   - Alcohol content is parsed to a number and compared with a small
     tolerance (±0.3%), since ABV is numeric, not a string-similarity
     problem.
+  - Country of origin uses **containment matching**, not a straight fuzzy
+    ratio: real labels print "Product of Italy" or "Made in Italy" while
+    an application typically just says "Italy," and a plain similarity
+    ratio penalizes that length difference even though the country
+    matches exactly. Required only for imports — legitimately blank on
+    both sides for domestic products, which counts as a match rather
+    than a missing-field failure.
   - The **government warning statement is checked with exact, verbatim text
     comparison** against the required statutory wording (27 CFR 16.21),
     plus a separate check that "GOVERNMENT WARNING:" is both all-caps and

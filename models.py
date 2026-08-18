@@ -11,6 +11,11 @@ class ApplicationData:
     class_type: str
     alcohol_content: str
     net_contents: str
+    name_and_address: str
+    # Only required for imports (27 CFR) -- domestic products legitimately
+    # have no country of origin printed anywhere, so this defaults empty
+    # rather than being treated as always-required like the fields above.
+    country_of_origin: str = ""
 
 
 @dataclass
@@ -21,8 +26,10 @@ class ExtractedLabel:
     class_type: str
     alcohol_content: str
     net_contents: str
+    name_and_address: str
     warning_statement_text: str
     warning_heading_is_caps_bold: bool
+    country_of_origin: str = ""
     notes: str = ""
 
 

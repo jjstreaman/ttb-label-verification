@@ -37,6 +37,16 @@ EXTRACTION_TOOL = {
                 "type": "string",
                 "description": "Net contents exactly as printed, e.g. '750 mL'.",
             },
+            "name_and_address": {
+                "type": "string",
+                "description": (
+                    "Name and address of the bottler/producer exactly as "
+                    "printed, e.g. 'Distilled and Bottled by Old Tom "
+                    "Distillery, Louisville, KY'. May span multiple lines on "
+                    "the label -- join them with a single space. Empty "
+                    "string if not present."
+                ),
+            },
             "warning_statement_text": {
                 "type": "string",
                 "description": (
@@ -57,6 +67,15 @@ EXTRACTION_TOOL = {
                     "is present."
                 ),
             },
+            "country_of_origin": {
+                "type": "string",
+                "description": (
+                    "Country of origin exactly as printed, e.g. 'Product of "
+                    "Italy'. Only required on imports -- empty string if not "
+                    "present, which is normal and expected for domestic "
+                    "products."
+                ),
+            },
             "notes": {
                 "type": "string",
                 "description": (
@@ -70,8 +89,10 @@ EXTRACTION_TOOL = {
             "class_type",
             "alcohol_content",
             "net_contents",
+            "name_and_address",
             "warning_statement_text",
             "warning_heading_is_caps_bold",
+            "country_of_origin",
             "notes",
         ],
     },
@@ -167,8 +188,10 @@ def extract_label_fields(
         class_type=data["class_type"],
         alcohol_content=data["alcohol_content"],
         net_contents=data["net_contents"],
+        name_and_address=data["name_and_address"],
         warning_statement_text=data["warning_statement_text"],
         warning_heading_is_caps_bold=data["warning_heading_is_caps_bold"],
+        country_of_origin=data.get("country_of_origin", ""),
         notes=data.get("notes", ""),
     )
     return extracted, latency
