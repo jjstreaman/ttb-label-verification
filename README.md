@@ -7,7 +7,12 @@ net contents, name and address of the bottler/producer, country of origin
 
 ## Screenshots
 
-Both taken against the live Cloud Run deployment, not a local dev server.
+All taken against the live Cloud Run deployment, not a local dev server.
+
+**Passcode gate** — every visitor sees this first; see "Access control"
+below for why:
+
+![Passcode gate](screenshots/passcode-gate.png)
 
 **Batch Upload** — 6 labels processed in one run (4 pass, 2 correctly
 routed to "needs review" for a genuine ABV mismatch and a broken warning
@@ -48,63 +53,63 @@ used to test each field-matching rule).
 ## Deploy to Cloud Run
 
 **Live deployment:** https://ttb-label-verification-763207276979.us-east5.run.app
--- **IAM-gated, not public.** An unauthenticated request gets a `403
-Forbidden` from Google's frontend, not the app. Every verification call
-spends real money against a personal Anthropic API key, so this is
-deliberately not open to the internet at large -- see "Access control"
-below for why and how to reach it.
+-- publicly reachable at the HTTP level, but gated by an in-app passcode
+(see "Access control" below). Ask for the passcode if you don't have it.
 
 ```bash
 echo -n "<your-anthropic-api-key>" | gcloud secrets create anthropic-api-key --data-file=-
+echo -n "<your-chosen-passcode>" | gcloud secrets create app-passcode --data-file=-
 
 # The Cloud Run service's default compute service account needs explicit
-# access to read the secret -- deploy fails without this, with a clear
+# access to read each secret -- deploy fails without this, with a clear
 # "Permission denied on secret" error naming the account to grant.
-gcloud secrets add-iam-policy-binding anthropic-api-key \
-  --member="serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
+for secret in anthropic-api-key app-passcode; do
+  gcloud secrets add-iam-policy-binding "$secret" \
+    --member="serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+done
 
 gcloud run deploy ttb-label-verification \
   --source . \
   --region us-east5 \
-  --set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest \
-  --no-allow-unauthenticated
+  --set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest,APP_PASSCODE=app-passcode:latest \
+  --allow-unauthenticated
 ```
 
 ## Access control
 
-The service requires Cloud Run IAM auth (`roles/run.invoker`) -- there is
-no `--allow-unauthenticated`, and there was, briefly, during initial
-development; it was locked down once deployed because an open URL in a
-public README with a live paid API key behind it is a real abuse vector,
-not a theoretical one.
+Cloud Run IAM auth (`--no-allow-unauthenticated`) was the first approach
+here, and it worked, but it means whoever needs to test the app has to be
+individually granted a Google Cloud IAM role and either run
+`gcloud run services proxy` or send authenticated requests -- real
+friction for someone who just wants to click a link and try a prototype.
 
-**To grant someone access:**
+**Current approach: an app-level passcode gate instead** (`require_passcode()`
+in `app.py`, checked via `secrets.compare_digest` against the `APP_PASSCODE`
+env var). Cloud Run itself is public again
+(`--allow-unauthenticated`); the app is the gatekeeper. Whoever has the
+URL *and* the passcode gets in -- no Google account, no `gcloud`, no proxy
+tunnel. It's a weaker security boundary than IAM (a shared secret, no
+per-user audit trail) but the actual goal was stopping randoms/bots from
+burning a personal Anthropic API key on an open URL, not protecting
+something that needs real access control -- a passcode fully solves that
+problem with far less friction for a take-home reviewer.
 
-```bash
-gcloud run services add-iam-policy-binding ttb-label-verification \
-  --region=us-east5 \
-  --member="user:their-email@example.com" \
-  --role="roles/run.invoker"
-```
+`APP_PASSCODE` unset entirely (the default for local dev) means no gate
+at all -- there's no reason to password-protect your own machine.
 
-**To access it yourself** (requires `gcloud auth login` with a granted
-account):
-
-```bash
-gcloud run services proxy ttb-label-verification --region=us-east5 --port=8502
-```
-
-Opens an authenticated local tunnel at `http://localhost:8502` -- ordinary
-browser access, no manual token handling. (Requires the `cloud-run-proxy`
-gcloud component: `gcloud components install cloud-run-proxy`.)
-
-**Trade-off:** this is more friction than a public link -- whoever needs
-to test it must be explicitly granted access first, and access it through
-the proxy or their own authenticated request rather than just clicking a
-URL. That's the deliberate choice here: cost/abuse protection over
-frictionless access, given the app is backed by a metered API key rather
-than free infrastructure.
+**Known reliability caveat, found while testing this:** the first
+interaction right after entering the correct passcode intermittently
+doesn't register against the live deployment -- confirmed via repeated
+automated testing (`.claude/skills/run-ttb-label-verification/driver.py`),
+not just a one-off. A human reviewer who pauses for a second after
+unlocking before clicking anything is unlikely to hit it (every manual,
+human-paced test during development succeeded); it showed up specifically
+under rapid, back-to-back automated interaction. Root cause wasn't fully
+pinned down -- session affinity is enabled and didn't fix it, cold start
+was ruled out by reproducing back-to-back on a warm instance, and a fixed
+settle delay didn't help either. If a click after unlocking seems to do
+nothing, the fix is just: try it again.
 
 **Deployment gotchas hit and fixed:**
 

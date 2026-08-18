@@ -13,6 +13,7 @@ Usage (run with the project's venv interpreter, from the project root):
 
 import argparse
 import glob
+import os
 import subprocess
 import sys
 import time
@@ -96,6 +97,65 @@ def _find_file_inputs(page):
     return csv_input, images_input
 
 
+def _enter_passcode_if_needed(page, passcode):
+    """No-op if the app isn't passcode-gated (APP_PASSCODE unset)."""
+    if page.get_by_label("Passcode").count() == 0:
+        return
+    if not passcode:
+        raise SystemExit(
+            "App is passcode-gated but no passcode is available -- pass "
+            "--passcode or set APP_PASSCODE in the environment."
+        )
+    page.get_by_label("Passcode").fill(passcode)
+    page.get_by_role("button", name="Enter").click()
+    page.get_by_role("tab", name="Single Label").wait_for(state="visible", timeout=10000)
+    page.get_by_role("tab", name="Batch Upload").wait_for(state="visible", timeout=10000)
+
+
+def _goto_and_unlock(browser, url, passcode, viewport, then_wait_for, post_unlock_tab=None, attempts=8):
+    """Navigate + clear the passcode gate, retrying with a fresh page on failure.
+
+    Confirmed non-deterministic against the real deployment: identical
+    back-to-back runs sometimes pass and sometimes fail *some* interaction
+    shortly after the passcode's st.rerun() -- not always the same one
+    (seen on the first post-unlock tab click, and separately on the first
+    content selector right after that), with no code difference between
+    successful and failed runs (ruled out cold start, session affinity,
+    and a fixed settle delay -- see SKILL.md Gotchas). Root cause not
+    fully pinned down. What's empirically true: a fresh page + retrying
+    the *whole* post-unlock sequence reliably gets there, so that's the
+    mitigation actually implemented here rather than chasing one symptom
+    at a time.
+
+    `then_wait_for` is a text selector that must become visible before an
+    attempt counts as successful -- this is what widens the retried unit
+    to cover flakiness beyond just the tab click itself.
+    """
+    from playwright.sync_api import TimeoutError as PWTimeoutError
+
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        page = browser.new_page(viewport=viewport)
+        try:
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.wait_for_selector("text=TTB Alcohol Label Verification", timeout=20000)
+            _enter_passcode_if_needed(page, passcode)
+            if post_unlock_tab:
+                page.get_by_role("tab", name=post_unlock_tab).click(timeout=10000)
+            page.wait_for_selector(f"text={then_wait_for}", timeout=10000)
+            return page
+        except PWTimeoutError as exc:
+            last_error = exc
+            print(f"  (attempt {attempt}/{attempts} failed to reach a stable state, retrying with a fresh page)")
+            page.close()
+            # Failures observed clustering in multi-attempt runs, not just
+            # single isolated misses -- a short backoff avoids hammering
+            # what looks like a sustained several-second degraded window
+            # rather than a purely per-request coin flip.
+            time.sleep(3)
+    raise SystemExit(f"Could not get past the app after {attempts} attempts: {last_error}")
+
+
 def cmd_batch(args):
     from playwright.sync_api import sync_playwright
 
@@ -113,11 +173,11 @@ def cmd_batch(args):
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1400, "height": 1000})
-        page.goto(target_url, wait_until="networkidle", timeout=30000)
-        page.wait_for_selector("text=TTB Alcohol Label Verification", timeout=20000)
-        page.get_by_role("tab", name="Batch Upload").click()
-        page.wait_for_selector("text=Applications CSV", timeout=10000)
+        page = _goto_and_unlock(
+            browser, target_url, args.passcode or os.environ.get("APP_PASSCODE"),
+            viewport={"width": 1400, "height": 1000},
+            then_wait_for="Applications CSV", post_unlock_tab="Batch Upload",
+        )
 
         csv_input, images_input = _find_file_inputs(page)
         csv_input.set_input_files(str(csv_path))
@@ -158,11 +218,14 @@ def cmd_single(args):
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1400, "height": 1000})
-        page.goto(target_url, wait_until="networkidle", timeout=30000)
-        page.wait_for_selector("text=TTB Alcohol Label Verification", timeout=20000)
-        page.get_by_role("tab", name="Single Label").click()
-        page.wait_for_selector("text=Submitted application data", timeout=10000)
+        # No post_unlock_tab: "Single Label" is st.tabs()'s first/default
+        # tab, already showing after unlock -- clicking it was a redundant
+        # extra action that only added another chance to race the rerun.
+        page = _goto_and_unlock(
+            browser, target_url, args.passcode or os.environ.get("APP_PASSCODE"),
+            viewport={"width": 1400, "height": 1000},
+            then_wait_for="Submitted application data",
+        )
 
         # Streamlit text_input widgets don't commit to session state on
         # .fill() alone -- they need a blur/Enter, or the value sits as
@@ -221,6 +284,7 @@ def main():
     p_batch.add_argument("--csv", help="defaults to sample_data/applications_template.csv")
     p_batch.add_argument("--images", nargs="*", help="defaults to all sample_data/*.png")
     p_batch.add_argument("--url", help="target a remote deployment instead of localhost:8501 (skips the local `start` check)")
+    p_batch.add_argument("--passcode", help="defaults to $APP_PASSCODE; only needed if the target is passcode-gated")
 
     p_single = sub.add_parser("single", help="drive the Single Label tab")
     p_single.add_argument("image")
@@ -231,6 +295,7 @@ def main():
     p_single.add_argument("--name-address", dest="name_address", default="", help="bottler/producer name & address (optional field, blank by default)")
     p_single.add_argument("--country", default="", help="country of origin, imports only (optional field, blank by default)")
     p_single.add_argument("--url", help="target a remote deployment instead of localhost:8501 (skips the local `start` check)")
+    p_single.add_argument("--passcode", help="defaults to $APP_PASSCODE; only needed if the target is passcode-gated")
 
     args = parser.parse_args()
     {"start": cmd_start, "stop": cmd_stop, "batch": cmd_batch, "single": cmd_single}[args.cmd](args)

@@ -37,6 +37,9 @@ escapes); use `.venv/Scripts/python.exe`.
 - `.env` must have a working `ANTHROPIC_API_KEY` (or `GOOGLE_CLOUD_PROJECT`
   for Vertex) -- the app calls the real Claude API on every verification,
   there is no mock/offline mode.
+- If `APP_PASSCODE` is set (always true against the production URL; unset
+  by default for local dev), the driver needs it too via `--passcode` or
+  the same env var -- see the passcode-gate section below.
 
 ## Run (agent path)
 
@@ -54,25 +57,24 @@ Server log: `streamlit_driver.log` at the project root.
 |---|---|
 | `start` | launch Streamlit in the background, poll `:8501` until it serves |
 | `stop` | find whatever's listening on `:8501` via `netstat` and `taskkill` it |
-| `batch [--csv PATH] [--images PATH ...] [--url URL]` | drive the Batch Upload tab; defaults to `sample_data/applications_template.csv` + all `sample_data/*.png`. Real API calls, can take up to ~90s for 6 images. |
-| `single IMAGE BRAND CLASS_TYPE ABV NET_CONTENTS [--url URL]` | drive the Single Label tab with one image + the 4 application-data fields |
+| `batch [--csv PATH] [--images PATH ...] [--url URL] [--passcode PC]` | drive the Batch Upload tab; defaults to `sample_data/applications_template.csv` + all `sample_data/*.png`. Real API calls, can take up to ~90s for 6 images. |
+| `single IMAGE BRAND CLASS_TYPE ABV NET_CONTENTS [--url URL] [--passcode PC]` | drive the Single Label tab with one image + the application-data fields |
 
 `start` must be run before `batch`/`single` (they check `:8501` and fail
 fast with a clear message if nothing's listening) -- unless `--url` is
 passed, which points the driver at a remote target instead and skips the
 localhost check entirely.
 
-**The production URL requires Cloud Run IAM auth** (see README's "Access
-control") -- hitting it directly returns `403 Forbidden` from Google's
-frontend, not the app. Testing against it means tunneling through
-`gcloud run services proxy` first (requires being granted
-`roles/run.invoker` and the `cloud-run-proxy` gcloud component), then
-pointing `--url` at the local tunnel instead of the public URL:
+**The production URL is public at the HTTP level but passcode-gated by the
+app itself** (see README's "Access control" -- this project tried Cloud
+Run IAM auth first, then switched to an app-level gate for reviewer
+friction reasons). `batch`/`single` clear the gate automatically via
+`--passcode` (or `$APP_PASSCODE`), retrying with a fresh page on failure --
+see the Gotchas entry on this below before assuming a single failure means
+something is broken:
 
 ```bash
-gcloud components install cloud-run-proxy --quiet   # one-time
-gcloud run services proxy ttb-label-verification --region=us-east5 --port=8502 &
-.venv/Scripts/python.exe .claude/skills/run-ttb-label-verification/driver.py batch --url http://localhost:8502
+.venv/Scripts/python.exe .claude/skills/run-ttb-label-verification/driver.py batch --url https://ttb-label-verification-763207276979.us-east5.run.app --passcode "$APP_PASSCODE"
 ```
 
 This is how the Cloud Run deploy was verified as actually working end to
@@ -167,30 +169,62 @@ has a documented expected verdict) -- see that file for the full matrix.
   the `except` is what actually surfaced the traceback that led to the
   two gotchas above. If you add new try/except blocks to this app,
   log inside them, not just display-in-UI.
-- **File uploads against a `--url` remote target are flakier than against
-  localhost.** Hit this once: `set_input_files()` silently didn't attach
-  the file at all (screenshot showed the empty uploader, no chip, no error)
-  even though every text field committed correctly -- likely the extra
-  network latency of a real Cloud Run round-trip vs. instant localhost
-  changing the timing `driver.py` assumes. A plain retry succeeded. If
-  this recurs, the real fix is polling for the upload chip to appear
-  (not just the button's enabled state) with a longer timeout when `--url`
-  is set, rather than assuming local-dev timing holds remotely too.
+- **The first interaction right after the passcode's `st.rerun()` is
+  genuinely non-deterministic against the real deployment** -- this is
+  the single most time-consuming thing found while building this driver,
+  and it's worth understanding rather than just copying the retry code.
+  Symptoms varied run to run: sometimes the very next tab click failed
+  (`get_by_role("tab", ...).click()` timing out after 30s even though the
+  same tab was confirmed `visible` moments earlier), sometimes it was the
+  content selector *after* that click instead. Identical back-to-back
+  `driver.py batch` invocations, same passcode, same network: one would
+  pass clean, the next would exhaust every retry, the one after that
+  would pass on attempt 1. What was ruled out, in order tried: cold start
+  (reproduced the failure on a provably warm instance), session affinity
+  (`--session-affinity` enabled on the Cloud Run service, redeployed,
+  still failed), a fixed settle delay (`wait_for_timeout(1500)` after the
+  gate, still failed). What actually works: `_goto_and_unlock()` retries
+  the *entire* navigate-unlock-first-click-first-content sequence with a
+  fresh `page` (up to 8 attempts, 3s backoff between them) rather than
+  patching one symptom at a time -- failures were observed clustering
+  (all 4 attempts failing in a row at 4 max) as often as being isolated,
+  consistent with a several-second degraded window on the backend rather
+  than a clean per-request coin flip. If you extend `driver.py` with new
+  post-unlock interactions, put them inside `_goto_and_unlock`'s retried
+  block (via `then_wait_for`/`post_unlock_tab`), not after it returns.
+- **A human reviewer is much less likely to hit this than the automation
+  does.** Every manual, deliberately-paced Playwright test during this
+  investigation (type passcode, look at the result, *then* click
+  something) succeeded on the first try, every time. The failures showed
+  up specifically under rapid, scripted, back-to-back interaction. Worth
+  knowing so a single manual report of "I clicked something right after
+  entering the passcode and nothing happened, but it worked when I tried
+  again" isn't mistaken for a new bug -- it's this one.
+- **File uploads against a `--url` remote target were separately flaky
+  once**, before the above was even understood: `set_input_files()`
+  silently didn't attach the file (empty uploader, no chip, no error)
+  even though text fields committed fine. A plain retry fixed that
+  specific instance. May be the same underlying cause as the gate
+  flakiness above (both are "some interaction against the live
+  deployment intermittently doesn't land"), never confirmed either way.
 - **`gcloud run services proxy` prompts interactively to install the
   `cloud-run-proxy` component** the first time it's used, which hangs
   forever in a non-interactive/backgrounded shell instead of failing
   loudly. Run `gcloud components install cloud-run-proxy --quiet` once,
-  explicitly, before ever backgrounding the proxy command.
+  explicitly, before ever backgrounding the proxy command. (This project
+  no longer uses the proxy day-to-day since moving off IAM auth, but it's
+  still how you'd reach the Cloud Run service directly for
+  infra-level debugging, bypassing the app's own passcode gate.)
 - **A killed proxy process can leave its port bound** ("Only one usage of
   each socket address is normally permitted") even after the command that
   opened it appears to have exited. `netstat -ano | grep :PORT` + `taskkill
   //F //PID <pid>` before retrying on the same port, same as the Streamlit
   server's own `stop` command already does.
-- **IAM policy changes are not instant.** Right after removing
-  `allUsers`' invoker binding, a handful of requests still returned `200`
-  before it started correctly returning `403` -- brief propagation delay,
-  not a sign the policy change didn't take. Don't conclude a lockdown
-  failed from the first request or two; recheck after a few seconds.
+- **IAM policy changes are not instant** (from when this project used
+  `--no-allow-unauthenticated`, kept in case IAM auth comes back). Right
+  after removing `allUsers`' invoker binding, a handful of requests still
+  returned `200` before it started correctly returning `403` -- brief
+  propagation delay, not a sign the policy change didn't take.
 
 ## Troubleshooting
 
@@ -208,3 +242,12 @@ has a documented expected verdict) -- see that file for the full matrix.
   up, or `python-dotenv` isn't loading it -- `app.py` calls `load_dotenv()`
   at import time, so this should be automatic if `.env` exists at the
   project root with a valid key.
+- **App is passcode-gated but no passcode is available**: pass `--passcode`
+  or set `$APP_PASSCODE` in the shell running the driver -- note that
+  `.env`'s `APP_PASSCODE` is only loaded by the Streamlit *app* process
+  (via `load_dotenv()` inside `app.py`), not automatically picked up by
+  `driver.py` itself, which is a separate process.
+- **`Could not get past the app after N attempts`**: the gate/first-click
+  flakiness described in Gotchas exhausted every retry -- genuinely rare
+  given 8 attempts with backoff, but if it happens, just run the command
+  again; this has never failed twice in a row across everything tested.

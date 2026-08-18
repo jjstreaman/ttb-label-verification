@@ -8,6 +8,8 @@ Two modes:
 
 import io
 import logging
+import os
+import secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
@@ -23,6 +25,34 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="TTB Label Verification", page_icon="🍾", layout="wide")
+
+
+def require_passcode() -> None:
+    """Gate the rest of the app behind a passcode, when one is configured.
+
+    Unset locally by default -- there's no reason to gate your own machine.
+    Always set in the Cloud Run deployment: an open URL there spends a
+    real, metered Anthropic API key on whoever finds it, so this is the
+    app-level replacement for the IAM lockdown this project used briefly.
+    """
+    expected = os.environ.get("APP_PASSCODE")
+    if not expected:
+        return
+    if st.session_state.get("authenticated"):
+        return
+
+    st.title("TTB Alcohol Label Verification")
+    entered = st.text_input("Passcode", type="password")
+    if st.button("Enter", type="primary"):
+        if secrets.compare_digest(entered, expected):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect passcode.")
+    st.stop()
+
+
+require_passcode()
 
 CUSTOM_CSS = """
 <style>
