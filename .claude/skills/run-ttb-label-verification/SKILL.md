@@ -59,14 +59,24 @@ Server log: `streamlit_driver.log` at the project root.
 
 `start` must be run before `batch`/`single` (they check `:8501` and fail
 fast with a clear message if nothing's listening) -- unless `--url` is
-passed, which points the driver at a remote deployment (e.g. the Cloud Run
-URL) instead and skips the localhost check entirely. This is how the
-Cloud Run deploy was verified as actually working, not just returning
-HTTP 200:
+passed, which points the driver at a remote target instead and skips the
+localhost check entirely.
+
+**The production URL requires Cloud Run IAM auth** (see README's "Access
+control") -- hitting it directly returns `403 Forbidden` from Google's
+frontend, not the app. Testing against it means tunneling through
+`gcloud run services proxy` first (requires being granted
+`roles/run.invoker` and the `cloud-run-proxy` gcloud component), then
+pointing `--url` at the local tunnel instead of the public URL:
 
 ```bash
-.venv/Scripts/python.exe .claude/skills/run-ttb-label-verification/driver.py batch --url https://ttb-label-verification-763207276979.us-east5.run.app
+gcloud components install cloud-run-proxy --quiet   # one-time
+gcloud run services proxy ttb-label-verification --region=us-east5 --port=8502 &
+.venv/Scripts/python.exe .claude/skills/run-ttb-label-verification/driver.py batch --url http://localhost:8502
 ```
+
+This is how the Cloud Run deploy was verified as actually working end to
+end, not just returning HTTP 200 on the root path.
 
 ## Run (human path)
 
@@ -166,6 +176,21 @@ has a documented expected verdict) -- see that file for the full matrix.
   this recurs, the real fix is polling for the upload chip to appear
   (not just the button's enabled state) with a longer timeout when `--url`
   is set, rather than assuming local-dev timing holds remotely too.
+- **`gcloud run services proxy` prompts interactively to install the
+  `cloud-run-proxy` component** the first time it's used, which hangs
+  forever in a non-interactive/backgrounded shell instead of failing
+  loudly. Run `gcloud components install cloud-run-proxy --quiet` once,
+  explicitly, before ever backgrounding the proxy command.
+- **A killed proxy process can leave its port bound** ("Only one usage of
+  each socket address is normally permitted") even after the command that
+  opened it appears to have exited. `netstat -ano | grep :PORT` + `taskkill
+  //F //PID <pid>` before retrying on the same port, same as the Streamlit
+  server's own `stop` command already does.
+- **IAM policy changes are not instant.** Right after removing
+  `allUsers`' invoker binding, a handful of requests still returned `200`
+  before it started correctly returning `403` -- brief propagation delay,
+  not a sign the policy change didn't take. Don't conclude a lockdown
+  failed from the first request or two; recheck after a few seconds.
 
 ## Troubleshooting
 

@@ -48,6 +48,11 @@ used to test each field-matching rule).
 ## Deploy to Cloud Run
 
 **Live deployment:** https://ttb-label-verification-763207276979.us-east5.run.app
+-- **IAM-gated, not public.** An unauthenticated request gets a `403
+Forbidden` from Google's frontend, not the app. Every verification call
+spends real money against a personal Anthropic API key, so this is
+deliberately not open to the internet at large -- see "Access control"
+below for why and how to reach it.
 
 ```bash
 echo -n "<your-anthropic-api-key>" | gcloud secrets create anthropic-api-key --data-file=-
@@ -63,10 +68,43 @@ gcloud run deploy ttb-label-verification \
   --source . \
   --region us-east5 \
   --set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest \
-  --allow-unauthenticated
+  --no-allow-unauthenticated
 ```
 
-Drop `--allow-unauthenticated` if this shouldn't be publicly reachable.
+## Access control
+
+The service requires Cloud Run IAM auth (`roles/run.invoker`) -- there is
+no `--allow-unauthenticated`, and there was, briefly, during initial
+development; it was locked down once deployed because an open URL in a
+public README with a live paid API key behind it is a real abuse vector,
+not a theoretical one.
+
+**To grant someone access:**
+
+```bash
+gcloud run services add-iam-policy-binding ttb-label-verification \
+  --region=us-east5 \
+  --member="user:their-email@example.com" \
+  --role="roles/run.invoker"
+```
+
+**To access it yourself** (requires `gcloud auth login` with a granted
+account):
+
+```bash
+gcloud run services proxy ttb-label-verification --region=us-east5 --port=8502
+```
+
+Opens an authenticated local tunnel at `http://localhost:8502` -- ordinary
+browser access, no manual token handling. (Requires the `cloud-run-proxy`
+gcloud component: `gcloud components install cloud-run-proxy`.)
+
+**Trade-off:** this is more friction than a public link -- whoever needs
+to test it must be explicitly granted access first, and access it through
+the proxy or their own authenticated request rather than just clicking a
+URL. That's the deliberate choice here: cost/abuse protection over
+frictionless access, given the app is backed by a metered API key rather
+than free infrastructure.
 
 **Deployment gotchas hit and fixed:**
 
