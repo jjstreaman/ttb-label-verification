@@ -169,37 +169,40 @@ has a documented expected verdict) -- see that file for the full matrix.
   the `except` is what actually surfaced the traceback that led to the
   two gotchas above. If you add new try/except blocks to this app,
   log inside them, not just display-in-UI.
-- **The first interaction right after the passcode's `st.rerun()` is
-  genuinely non-deterministic against the real deployment** -- this is
-  the single most time-consuming thing found while building this driver,
-  and it's worth understanding rather than just copying the retry code.
-  Symptoms varied run to run: sometimes the very next tab click failed
-  (`get_by_role("tab", ...).click()` timing out after 30s even though the
-  same tab was confirmed `visible` moments earlier), sometimes it was the
-  content selector *after* that click instead. Identical back-to-back
-  `driver.py batch` invocations, same passcode, same network: one would
-  pass clean, the next would exhaust every retry, the one after that
-  would pass on attempt 1. What was ruled out, in order tried: cold start
-  (reproduced the failure on a provably warm instance), session affinity
-  (`--session-affinity` enabled on the Cloud Run service, redeployed,
-  still failed), a fixed settle delay (`wait_for_timeout(1500)` after the
-  gate, still failed). What actually works: `_goto_and_unlock()` retries
-  the *entire* navigate-unlock-first-click-first-content sequence with a
-  fresh `page` (up to 8 attempts, 3s backoff between them) rather than
-  patching one symptom at a time -- failures were observed clustering
-  (all 4 attempts failing in a row at 4 max) as often as being isolated,
-  consistent with a several-second degraded window on the backend rather
-  than a clean per-request coin flip. If you extend `driver.py` with new
-  post-unlock interactions, put them inside `_goto_and_unlock`'s retried
-  block (via `then_wait_for`/`post_unlock_tab`), not after it returns.
-- **A human reviewer is much less likely to hit this than the automation
-  does.** Every manual, deliberately-paced Playwright test during this
-  investigation (type passcode, look at the result, *then* click
-  something) succeeded on the first try, every time. The failures showed
-  up specifically under rapid, scripted, back-to-back interaction. Worth
-  knowing so a single manual report of "I clicked something right after
-  entering the passcode and nothing happened, but it worked when I tried
-  again" isn't mistaken for a new bug -- it's this one.
+- **RESOLVED, but the story is worth keeping.** The first interaction
+  right after the passcode step used to be genuinely non-deterministic
+  against the real deployment -- identical back-to-back `driver.py batch`
+  invocations, one would pass clean, the next would exhaust every retry.
+  What was ruled out chasing it, in order: cold start (reproduced the
+  failure on a provably warm instance), session affinity
+  (`--session-affinity` enabled, redeployed, still failed), a fixed
+  settle delay (`wait_for_timeout(1500)`, still failed). The actual cause,
+  found by a `/code-review high` pass rather than more manual guessing:
+  two separate bugs compounding. (1) `app.py`'s passcode form was plain
+  `st.text_input` + `st.button`, which is two separate Streamlit reruns
+  (one for the fill, one for the button's own implicit rerun, *then*
+  `st.rerun()` inside the handler makes a third) instead of one atomic
+  submission -- more rerun boundaries than necessary in an already
+  timing-sensitive path. (2) `_enter_passcode_if_needed` decided whether
+  the app was gated from an instant, zero-wait
+  `get_by_label("Passcode").count() == 0` check, racing Streamlit's own
+  incremental rendering (the title -- used as the "page is ready" signal
+  -- paints before the passcode input finishes mounting). Fixed both:
+  `app.py` now uses `st.form` (atomic submit, and real Enter-to-submit as
+  a side benefit), and the driver waits properly (`.wait_for(state=
+  "visible")`) instead of an instant count. Verified clean afterward: 7
+  consecutive runs against production (4 batch, 3 single), zero retries
+  needed on any of them, versus frequent retries (once 7 of 8 attempts)
+  before the fix. `_goto_and_unlock()`'s retry loop is left in place as
+  defense in depth, not because it's still load-bearing the way it was.
+- **A human reviewer was always much less likely to hit this than the
+  automation did**, even before the fix above. Every manual,
+  deliberately-paced Playwright test during the original investigation
+  (type passcode, look at the result, *then* click something) succeeded
+  on the first try, every time -- the failures were specific to rapid,
+  scripted, back-to-back interaction. Kept as a reminder that "found via
+  aggressive automated testing" and "affects real users" aren't the same
+  claim, even when (as here) it turned out worth fixing anyway.
 - **File uploads against a `--url` remote target were separately flaky
   once**, before the above was even understood: `set_input_files()`
   silently didn't attach the file (empty uploader, no chip, no error)
@@ -247,7 +250,13 @@ has a documented expected verdict) -- see that file for the full matrix.
   `.env`'s `APP_PASSCODE` is only loaded by the Streamlit *app* process
   (via `load_dotenv()` inside `app.py`), not automatically picked up by
   `driver.py` itself, which is a separate process.
-- **`Could not get past the app after N attempts`**: the gate/first-click
-  flakiness described in Gotchas exhausted every retry -- genuinely rare
-  given 8 attempts with backoff, but if it happens, just run the command
-  again; this has never failed twice in a row across everything tested.
+- **`Could not get past the app after N attempts`**: with the rendering
+  race fixed (see Gotchas), this should now be rare -- 7/7 clean runs
+  after the fix, versus frequent retries before it. If it recurs, just
+  run the command again; check `PWTimeoutError` details in the output for
+  which specific step is timing out.
+- **`Passcode was rejected by the app -- this is a wrong value, not a
+  timing flake`**: exactly what it says -- `--passcode`/`$APP_PASSCODE`
+  is genuinely wrong, not a retry-away-able issue. Fails in ~3-20s rather
+  than exhausting all 8 attempts, specifically so this doesn't get
+  mistaken for the flakiness above.

@@ -96,20 +96,28 @@ something that needs real access control -- a passcode fully solves that
 problem with far less friction for a take-home reviewer.
 
 `APP_PASSCODE` unset entirely (the default for local dev) means no gate
-at all -- there's no reason to password-protect your own machine.
+at all -- there's no reason to password-protect your own machine. A
+secret that's *present but resolves empty* (a botched Secret Manager
+value, say) is treated differently on purpose: `require_passcode()` fails
+closed with an error rather than silently treating blank the same as
+unset, which would have quietly made a paid deployment fully public with
+no warning. A wrong passcode guess also costs a fixed ~1.5s delay before
+the "Incorrect passcode" error renders -- not real rate limiting, but it
+turns unlimited free guessing into something with an actual cost.
 
-**Known reliability caveat, found while testing this:** the first
-interaction right after entering the correct passcode intermittently
-doesn't register against the live deployment -- confirmed via repeated
-automated testing (`.claude/skills/run-ttb-label-verification/driver.py`),
-not just a one-off. A human reviewer who pauses for a second after
-unlocking before clicking anything is unlikely to hit it (every manual,
-human-paced test during development succeeded); it showed up specifically
-under rapid, back-to-back automated interaction. Root cause wasn't fully
-pinned down -- session affinity is enabled and didn't fix it, cold start
-was ruled out by reproducing back-to-back on a warm instance, and a fixed
-settle delay didn't help either. If a click after unlocking seems to do
-nothing, the fix is just: try it again.
+**Reliability history:** the first interaction right after entering the
+passcode used to intermittently not register against the live deployment
+(confirmed via repeated automated testing, not a one-off -- a bad run
+could fail 7 of 8 attempts). A follow-up review (`/code-review high`)
+found the actual cause: `app.py`'s passcode form was plain
+`st.text_input` + `st.button`, which is two separate reruns (fill, then
+submit) instead of one atomic submission, and the test driver was
+deciding whether the app was gated from an instant, zero-wait DOM check
+that could race Streamlit's own rendering. Fixed both -- the form is now
+`st.form` (atomic submit, real Enter-to-submit for free), and the driver
+waits properly instead of guessing. Verified clean: 7 consecutive runs
+against production with zero retries needed, versus frequent retries
+before the fix.
 
 **Deployment gotchas hit and fixed:**
 

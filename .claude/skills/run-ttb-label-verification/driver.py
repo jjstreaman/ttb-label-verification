@@ -97,17 +97,59 @@ def _find_file_inputs(page):
     return csv_input, images_input
 
 
+def _resolve_passcode(args):
+    """--passcode wins over $APP_PASSCODE, including an explicit empty string.
+
+    `args.passcode or os.environ.get(...)` would treat --passcode ""
+    (explicitly forcing no/blank passcode, e.g. to test that path) the
+    same as the flag being omitted, since "" is falsy -- `is not None`
+    respects the explicit override.
+    """
+    return args.passcode if args.passcode is not None else os.environ.get("APP_PASSCODE")
+
+
 def _enter_passcode_if_needed(page, passcode):
     """No-op if the app isn't passcode-gated (APP_PASSCODE unset)."""
-    if page.get_by_label("Passcode").count() == 0:
+    from playwright.sync_api import TimeoutError as PWTimeoutError
+
+    passcode_field = page.get_by_label("Passcode")
+    # Don't decide from an instant, zero-wait count() check -- Streamlit's
+    # title (used as the page-ready signal by callers) paints before the
+    # passcode input finishes mounting, and reading count()==0 in that
+    # window misreads "not rendered yet" as "not gated at all", which was
+    # a likely contributor to the post-unlock flakiness this project spent
+    # a while chasing. Wait for one of the two genuinely stable end states
+    # instead: either the passcode field, or (if ungated / already past
+    # it) a tab.
+    try:
+        passcode_field.wait_for(state="visible", timeout=5000)
+    except PWTimeoutError:
+        page.get_by_role("tab", name="Single Label").wait_for(state="visible", timeout=10000)
         return
+
     if not passcode:
         raise SystemExit(
             "App is passcode-gated but no passcode is available -- pass "
             "--passcode or set APP_PASSCODE in the environment."
         )
-    page.get_by_label("Passcode").fill(passcode)
+    passcode_field.fill(passcode)
     page.get_by_role("button", name="Enter").click()
+
+    # A wrong passcode is a real, fast, deterministic rejection -- not the
+    # transient flakiness _goto_and_unlock's retry loop exists for. Check
+    # for it explicitly (short timeout: the error renders almost
+    # immediately if it's coming) so a bad passcode fails in ~3s with a
+    # clear message instead of silently burning through 8 retries over
+    # several minutes with the same wrong value every time.
+    try:
+        page.get_by_text("Incorrect passcode.").wait_for(state="visible", timeout=3000)
+        raise SystemExit(
+            "Passcode was rejected by the app -- this is a wrong value, "
+            "not a timing flake. Check --passcode / $APP_PASSCODE."
+        )
+    except PWTimeoutError:
+        pass  # no rejection shown -- proceed as if it was accepted
+
     page.get_by_role("tab", name="Single Label").wait_for(state="visible", timeout=10000)
     page.get_by_role("tab", name="Batch Upload").wait_for(state="visible", timeout=10000)
 
@@ -174,7 +216,7 @@ def cmd_batch(args):
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = _goto_and_unlock(
-            browser, target_url, args.passcode or os.environ.get("APP_PASSCODE"),
+            browser, target_url, _resolve_passcode(args),
             viewport={"width": 1400, "height": 1000},
             then_wait_for="Applications CSV", post_unlock_tab="Batch Upload",
         )
@@ -222,7 +264,7 @@ def cmd_single(args):
         # tab, already showing after unlock -- clicking it was a redundant
         # extra action that only added another chance to race the rerun.
         page = _goto_and_unlock(
-            browser, target_url, args.passcode or os.environ.get("APP_PASSCODE"),
+            browser, target_url, _resolve_passcode(args),
             viewport={"width": 1400, "height": 1000},
             then_wait_for="Submitted application data",
         )
@@ -280,13 +322,17 @@ def main():
     sub.add_parser("start", help="launch Streamlit in the background, wait until it serves")
     sub.add_parser("stop", help="kill whatever is listening on :8501")
 
-    p_batch = sub.add_parser("batch", help="drive the Batch Upload tab")
+    # Shared by batch and single so the flags (and their help text) are
+    # defined once instead of drifting between two copies.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--url", help="target a remote deployment instead of localhost:8501 (skips the local `start` check)")
+    common.add_argument("--passcode", help="defaults to $APP_PASSCODE; only needed if the target is passcode-gated")
+
+    p_batch = sub.add_parser("batch", parents=[common], help="drive the Batch Upload tab")
     p_batch.add_argument("--csv", help="defaults to sample_data/applications_template.csv")
     p_batch.add_argument("--images", nargs="*", help="defaults to all sample_data/*.png")
-    p_batch.add_argument("--url", help="target a remote deployment instead of localhost:8501 (skips the local `start` check)")
-    p_batch.add_argument("--passcode", help="defaults to $APP_PASSCODE; only needed if the target is passcode-gated")
 
-    p_single = sub.add_parser("single", help="drive the Single Label tab")
+    p_single = sub.add_parser("single", parents=[common], help="drive the Single Label tab")
     p_single.add_argument("image")
     p_single.add_argument("brand")
     p_single.add_argument("class_type")
@@ -294,8 +340,6 @@ def main():
     p_single.add_argument("net_contents")
     p_single.add_argument("--name-address", dest="name_address", default="", help="bottler/producer name & address (optional field, blank by default)")
     p_single.add_argument("--country", default="", help="country of origin, imports only (optional field, blank by default)")
-    p_single.add_argument("--url", help="target a remote deployment instead of localhost:8501 (skips the local `start` check)")
-    p_single.add_argument("--passcode", help="defaults to $APP_PASSCODE; only needed if the target is passcode-gated")
 
     args = parser.parse_args()
     {"start": cmd_start, "stop": cmd_stop, "batch": cmd_batch, "single": cmd_single}[args.cmd](args)

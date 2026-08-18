@@ -10,6 +10,7 @@ import io
 import logging
 import os
 import secrets
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
@@ -35,20 +36,39 @@ def require_passcode() -> None:
     real, metered Anthropic API key on whoever finds it, so this is the
     app-level replacement for the IAM lockdown this project used briefly.
     """
-    expected = os.environ.get("APP_PASSCODE")
-    if not expected:
-        return
+    if "APP_PASSCODE" not in os.environ:
+        return  # gate not configured -- normal for local dev
+    expected = os.environ["APP_PASSCODE"]
     if st.session_state.get("authenticated"):
         return
 
     st.title("TTB Alcohol Label Verification")
-    entered = st.text_input("Passcode", type="password")
-    if st.button("Enter", type="primary"):
+
+    if not expected:
+        # An empty-but-present secret is a misconfiguration, not "no gate
+        # wanted" -- treating it like unset would silently make a paid,
+        # metered deployment fully public. Fail closed instead.
+        st.error("Passcode gate is misconfigured. Contact the site owner.")
+        st.stop()
+
+    # st.form makes fill+submit one atomic rerun instead of two separate
+    # ones (fill, then a second rerun from the button click) -- fewer rerun
+    # boundaries in a path that's already timing-sensitive for automated
+    # testing, and it gets real Enter-to-submit for free.
+    with st.form("passcode_form"):
+        entered = st.text_input("Passcode", type="password")
+        submitted = st.form_submit_button("Enter", type="primary")
+
+    if submitted:
         if secrets.compare_digest(entered, expected):
             st.session_state["authenticated"] = True
             st.rerun()
         else:
+            # Cheap deterrent, not real rate limiting: a script resubmitting
+            # this form pays a fixed cost per guess instead of it being free.
+            time.sleep(1.5)
             st.error("Incorrect passcode.")
+    st.stop()
     st.stop()
 
 
