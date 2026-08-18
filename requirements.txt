@@ -1,0 +1,5 @@
+streamlit>=1.38
+anthropic[vertex]>=0.40
+rapidfuzz>=3.9
+pandas>=2.2
+python-dotenv>=1.0
